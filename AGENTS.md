@@ -28,7 +28,7 @@ For the MVP, this will run locally (in a docker container)
 - Use SQLLite local database for the database, creating a new db if it doesn't exist
 - Start and Stop server scripts for Mac, PC, Linux in scripts/
 
-## Current State
+## Starting Point
 
 A working MVP of the frontend has been built and is already in frontend. This is not yet designed for the Docker setup. It's a pure frontend-only demo.
 
@@ -49,5 +49,5 @@ A working MVP of the frontend has been built and is already in frontend. This is
 
 ## Working documentation
 
-All documents for planningand executing this project will be in the docs/ directory.
+All documents for planning and executing this project will be in the docs/ directory.
 Please review the docs/PLAN.md document before proceeding.
