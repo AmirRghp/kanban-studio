@@ -24,13 +24,27 @@ For the MVP, this will run locally (in a docker container)
 - Everything packaged into a Docker container
 - Use "uv" as the package manager for python in the Docker container
 - Use OpenRouter for the AI calls. An OPENROUTER_API_KEY is in .env in the project root
-- Use `openai/gpt-oss-120b` as the model
+- Default to the `dots-studio/dots-3-note-preview:free` model, overridable with
+  `OPENROUTER_MODEL` in `.env` so a different model can be tried without a code change
 - Use SQLLite local database for the database, creating a new db if it doesn't exist
 - Start and Stop server scripts for Mac, PC, Linux in scripts/
 
-## Starting Point
+## Current State
 
-A working MVP of the frontend has been built and is already in frontend. This is not yet designed for the Docker setup. It's a pure frontend-only demo.
+All ten parts of `docs/PLAN.md` are complete. The app builds and runs as one Docker
+container, serves the statically exported Next.js frontend from FastAPI on port 8000, and
+has a working sign-in flow, a persistent SQLite-backed board, and a chat sidebar where the
+AI edits the board through validated operations. All of it is in `./scripts/start.sh` and
+`./scripts/test.sh`.
+
+Read these before changing anything:
+
+- `docs/PLAN.md` - the parts, substeps, and success criteria
+- `docs/DATA-MODEL.md` - how the board is stored
+- `frontend/AGENTS.md`, `backend/AGENTS.md`, `scripts/AGENTS.md` - the code itself
+
+Everything is built and tested in Docker, via `./scripts/start.sh` and `./scripts/test.sh`.
+The host cannot run `npm` or `uv run` because this checkout path contains a colon.
 
 ## Color Scheme
 
