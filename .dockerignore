@@ -1,0 +1,15 @@
+# Keep the build context small and keep secrets out of it. .env is read at runtime by
+# docker compose, never baked into an image.
+**/node_modules
+**/.next
+**/out
+**/test-results
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+.git
+.env
+docs/
+.freebuff/
+**/.playwright-mcp/

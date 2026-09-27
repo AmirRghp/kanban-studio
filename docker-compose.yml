@@ -1,0 +1,102 @@
+# Pinning the project name keeps the app-data volume attached to THIS project no
+# matter where the checkout lives or what the folder is called. Without it, Compose
+# derives the name from the directory basename, so moving or renaming the checkout
+# silently creates a fresh (empty) volume and the board appears to vanish.
+name: pm-mvp
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+    ports:
+      # Loopback only. The single account has published credentials, so exposing the
+      # port on all interfaces would hand the board and the OpenRouter quota to the LAN.
+      # Override with a plain "8000:8000" if you genuinely want LAN access.
+      - "127.0.0.1:8000:8000"
+    # Keeps the SQLite file across `docker compose down` and image rebuilds.
+    volumes:
+      - app-data:/app/data
+    env_file:
+      - .env
+    environment:
+      # Signs the session cookie. Defaults to the same obvious dev value as
+      # app/config.py; set SESSION_SECRET in .env for anything not strictly local.
+      SESSION_SECRET: ${SESSION_SECRET:-dev-insecure-secret-change-me}
+    # Without this, `docker compose up --wait` returns as soon as the container is
+    # running, which is before uvicorn binds the port. stdlib urllib is used because
+    # python:slim has no curl.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+
+  # Test services. Behind the "test" profile so `docker compose up` never starts them.
+  # The host cannot run npm: the checkout path contains a colon, which npm cannot
+  # handle. Everything frontend therefore runs in a container.
+  backend-test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-test
+    # Only the live-marked tests read this, and they are skipped unless RUN_LIVE=1,
+    # so the key is passed through only when explicitly enabled.
+    env_file:
+      - path: .env
+        required: false
+
+  frontend-test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-test
+
+  # A throwaway app instance for e2e only. The board is persistent, so running the
+  # suite against the user's own board would accumulate duplicate cards and make the
+  # suite non-idempotent. /app/data is tmpfs, so every run starts from a freshly
+  # seeded database and leaves nothing behind.
+  app-e2e:
+    profiles: ["test"]
+    # Deliberately the same image as `app` rather than a second build of the same
+    # target. Two builds produced two image tags, and a rebuilt `app` left app-e2e
+    # running a stale copy, which showed up as missing UI in the e2e run.
+    image: pm-app
+    environment:
+      DATABASE_PATH: /app/data/e2e.db
+    volumes:
+      - type: tmpfs
+        target: /app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+
+  e2e:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: e2e
+    environment:
+      BASE_URL: http://app-e2e:8000
+    depends_on:
+      app-e2e:
+        condition: service_healthy
+
+volumes:
+  app-data:
