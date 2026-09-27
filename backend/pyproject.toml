@@ -1,0 +1,26 @@
+[project]
+name = "pm-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Project Management MVP"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+    # Runtime, not dev: app/ai.py makes outbound HTTP calls with it.
+    "httpx2>=2.13.1",
+    "itsdangerous>=2.2.0",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "live: calls the real OpenRouter API. Skipped unless RUN_LIVE=1.",
+]
