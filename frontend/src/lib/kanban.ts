@@ -2,6 +2,10 @@ export type Card = {
   id: string;
   title: string;
   details: string;
+  // Optional planning fields, mirroring the backend contract in docs/DATA-MODEL.md.
+  // Absent means unset; the backend stores an ISO date string and a label list.
+  dueDate?: string | null;
+  labels?: string[];
 };
 
 export type Column = {
@@ -165,4 +169,22 @@ export const createId = (prefix: string) => {
   const randomPart = Math.random().toString(36).slice(2, 8);
   const timePart = Date.now().toString(36);
   return `${prefix}-${randomPart}${timePart}`;
+};
+
+// Labels render as colored chips. The color is derived from the label text so the
+// same label is always the same color, on every card, without stored state.
+const LABEL_STYLES = [
+  "bg-[rgba(32,157,215,0.14)] text-[var(--primary-blue)]",
+  "bg-[rgba(236,173,10,0.16)] text-[#9a6f05]",
+  "bg-[rgba(117,57,145,0.12)] text-[var(--secondary-purple)]",
+  "bg-[rgba(3,33,71,0.08)] text-[var(--navy-dark)]",
+  "bg-[rgba(32,157,215,0.2)] text-[#136a94]",
+] as const;
+
+export const labelStyle = (label: string): string => {
+  let hash = 0;
+  for (let index = 0; index < label.length; index += 1) {
+    hash = (hash * 31 + label.charCodeAt(index)) >>> 0;
+  }
+  return LABEL_STYLES[hash % LABEL_STYLES.length];
 };

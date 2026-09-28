@@ -1,21 +1,24 @@
-# The Project Management MVP web app
+# Kanban Studio
 
 ## Business Requirements
 
 This project is building a Project Management App. Key features:
-- A user can sign in
+- A user can register an account or sign in
 - When signed in, the user sees a Kanban board representing their project
+- A user can have any number of boards, and switch, create, rename and delete them
 - The Kanban board has fixed columns that can be renamed
 - The cards on the Kanban board can be moved with drag and drop, and edited
+- A card can carry an optional due date and labels, set by hand or by the AI
 - There is an AI chat feature in a sidebar; the AI is able to create / edit / move one or more cards
 
 ## Limitations
 
-For the MVP, there will only be a user sign in (hardcoded to 'user' and 'password') but the database will support multiple users for future.
+For the MVP, this will run locally (in a docker container), bound to loopback by default.
 
-For the MVP, there will only be 1 Kanban board per signed in user.
+For the MVP, a board belongs to exactly one user. There is no sharing or membership.
 
-For the MVP, this will run locally (in a docker container)
+For the MVP, passwords are hashed with the stdlib (`hashlib.pbkdf2_hmac`) rather than
+argon2 or bcrypt, and the session secret defaults to a publicly known dev value.
 
 ## Technical Decisions
 
@@ -31,16 +34,18 @@ For the MVP, this will run locally (in a docker container)
 
 ## Current State
 
-All ten parts of `docs/PLAN.md` are complete. The app builds and runs as one Docker
-container, serves the statically exported Next.js frontend from FastAPI on port 8000, and
-has a working sign-in flow, a persistent SQLite-backed board, and a chat sidebar where the
-AI edits the board through validated operations. All of it is in `./scripts/start.sh` and
-`./scripts/test.sh`.
+Parts 1-10 of `docs/PLAN.md` are complete. Part 11 is implemented and verified by the
+test suites: real accounts with hashed passwords, any number of boards per user, a board
+switcher, and card due dates and labels, all editable by hand or by the AI. The app
+builds and runs as one Docker container, serves the statically exported Next.js frontend
+from FastAPI on port 8000, and has a working sign-in flow, a persistent SQLite-backed
+board, and a chat sidebar where the AI edits the selected board through validated
+operations. All of it is in `./scripts/start.sh` and `./scripts/test.sh`.
 
 Read these before changing anything:
 
 - `docs/PLAN.md` - the parts, substeps, and success criteria
-- `docs/DATA-MODEL.md` - how the board is stored
+- `docs/DATA-MODEL.md` - how accounts and boards are stored
 - `frontend/AGENTS.md`, `backend/AGENTS.md`, `scripts/AGENTS.md` - the code itself
 
 Everything is built and tested in Docker, via `./scripts/start.sh` and `./scripts/test.sh`.

@@ -34,6 +34,9 @@ class ChatRequest(BaseModel):
 
     message: str
     history: list[ChatMessage] = Field(default_factory=list)
+    # Which board the AI should edit. Required from the updated frontend; the routes
+    # resolve it against the signed-in user.
+    board_id: int
 
 
 class AiError(Exception):

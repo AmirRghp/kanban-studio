@@ -69,7 +69,9 @@ services:
     # Deliberately the same image as `app` rather than a second build of the same
     # target. Two builds produced two image tags, and a rebuilt `app` left app-e2e
     # running a stale copy, which showed up as missing UI in the e2e run.
-    image: pm-app
+    # The tag must match the compose-built name (project pm-mvp + service app); a
+    # drifted name here silently serves an old build to the e2e suite.
+    image: pm-mvp-app:latest
     environment:
       DATABASE_PATH: /app/data/e2e.db
     volumes:

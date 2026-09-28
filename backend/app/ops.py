@@ -1,7 +1,8 @@
 import uuid
+from datetime import date
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models import BoardData, Card
 
@@ -11,6 +12,8 @@ class CreateCard(BaseModel):
     column_id: str
     title: str
     details: str
+    due_date: date | None = None
+    labels: list[str] = Field(default_factory=list)
 
 
 class MoveCard(BaseModel):
@@ -24,6 +27,21 @@ class UpdateCard(BaseModel):
     card_id: str
     title: str
     details: str
+    due_date: date | None = None
+    labels: list[str] = Field(default_factory=list)
+
+    # update_card replaces the card, so an omitted due_date/labels would wipe the
+    # existing ones. `_update_card` reads `model_fields_set` to tell "absent" from
+    # "explicitly null": absent keeps what is there, an explicit value sets it. There is
+    # no companion boolean field, because nothing would ever set it and the model would
+    # have to be trusted to do so.
+
+    @field_validator("labels", mode="before")
+    @classmethod
+    def _strip_labels(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, str) and item.strip()]
+        return value
 
 
 class DeleteCard(BaseModel):
@@ -153,7 +171,13 @@ def _create_card(board: BoardData, operation: CreateCard) -> BoardData:
     index = _column_index(board, operation.column_id)
     # The server owns the id. The model never chooses one.
     card_id = new_card_id()
-    card = Card(id=card_id, title=operation.title, details=operation.details)
+    card = Card(
+        id=card_id,
+        title=operation.title,
+        details=operation.details,
+        due_date=operation.due_date,
+        labels=operation.labels,
+    )
 
     columns = list(board.columns)
     columns[index] = columns[index].model_copy(
@@ -179,9 +203,19 @@ def _move_card(board: BoardData, operation: MoveCard) -> BoardData:
 
 def _update_card(board: BoardData, operation: UpdateCard) -> BoardData:
     card = _card_or_skip(board, operation.card_id)
-    updated = card.model_copy(
-        update={"title": operation.title, "details": operation.details}
-    )
+    update: dict[str, object] = {
+        "title": operation.title,
+        "details": operation.details,
+    }
+    # Only touch a field the reply actually mentioned. `model_fields_set` records the
+    # keys the model supplied, so an explicit null still counts as "set it to nothing",
+    # which is how a due date gets cleared.
+    provided = operation.model_fields_set
+    if "due_date" in provided:
+        update["due_date"] = operation.due_date
+    if "labels" in provided:
+        update["labels"] = operation.labels
+    updated = card.model_copy(update=update)
     return BoardData(
         columns=list(board.columns),
         cards={**board.cards, operation.card_id: updated},

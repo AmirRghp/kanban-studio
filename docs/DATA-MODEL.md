@@ -1,31 +1,34 @@
 # Data model
 
-How the Kanban board is stored. Written in Part 5, implemented in Part 6.
+How the boards are stored. Originally written in Part 5; restructured in Part 11 for
+real accounts and multiple boards per user.
 
 ## Decision
 
 SQLite, with **one JSON blob per board**. The board's columns and cards live in a single
 `TEXT` column, not in normalised tables.
 
-The frontend already keeps the board in one normalised-in-memory structure, and the MVP has
-one board per user. Storing it as JSON means the API has no mapping layer in either
-direction: the same object the UI renders is what gets validated and persisted.
+The frontend already keeps the board in one normalised-in-memory structure. Storing it as
+JSON means the API has no mapping layer in either direction: the same object the UI
+renders is what gets validated and persisted.
 
 The cost is accepted deliberately: you cannot ask SQL questions about the board, such as
-"which cards are in the Review column" or "how many cards were added this week". If that
-is ever needed, this is the decision to revisit.
+"which cards are in the Review column". If that is ever needed, this is the decision to
+revisit.
 
 ## Tables
 
 ```sql
 CREATE TABLE users (
-    id       INTEGER PRIMARY KEY,
-    username TEXT    NOT NULL UNIQUE
+    id            INTEGER PRIMARY KEY,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL DEFAULT ''
 );
 
-CREATE TABLE boards (
+CREATE TABLE IF NOT EXISTS boards (
     id       INTEGER PRIMARY KEY,
-    user_id  INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name     TEXT    NOT NULL DEFAULT 'Untitled board',
     data     TEXT    NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0
 );
@@ -35,33 +38,39 @@ CREATE TABLE boards (
 |---|---|---|---|
 | `users` | `id` | `INTEGER` | Primary key, autoincrement |
 | `users` | `username` | `TEXT` | `UNIQUE`, the login name |
+| `users` | `password_hash` | `TEXT` | `pbkdf2_sha256$<iterations>$<salt hex>$<hash hex>`; empty on a migrated row until the seed backfills the demo credential |
 | `boards` | `id` | `INTEGER` | Primary key, autoincrement |
-| `boards` | `user_id` | `INTEGER` | `UNIQUE`, FK to `users.id`, `ON DELETE CASCADE` |
+| `boards` | `user_id` | `INTEGER` | FK to `users.id`, `ON DELETE CASCADE`. **Not** UNIQUE: a user owns any number of boards |
+| `boards` | `name` | `TEXT` | Shown in the board switcher |
 | `boards` | `data` | `TEXT` | The `BoardData` JSON |
 | `boards` | `revision` | `INTEGER` | Bumped on every write; see below |
 
-Why the table is named `boards` while `user_id` is `UNIQUE`: the MVP allows one board per
-user, but naming it `boards` leaves room for more later without a migration. The `UNIQUE`
-constraint is what enforces the MVP rule, and dropping it is the whole change needed to
-support multiple boards.
+`ON DELETE CASCADE` means removing a user removes their boards.
 
-`ON DELETE CASCADE` means removing a user removes their board, so there is no orphaned
-JSON left behind.
+Passwords are hashed with stdlib `hashlib.pbkdf2_hmac` (SHA-256, 240k iterations),
+verified in constant time. The algorithm and cost are written into the stored string, so
+raising the cost later needs no migration.
 
-There is no `created_at` or `updated_at`. Nothing in the MVP displays or sorts by time, and
-the board JSON is replaced wholesale on every save, so a row-level timestamp would only
-ever record the last write. Add them when something needs them.
+There is no `created_at` or `updated_at`. Nothing displays or sorts by time, and the
+board JSON is replaced wholesale on every save.
 
 There is a `revision` integer instead of a timestamp: it is the optimistic-concurrency
-token. Every write bumps it, `GET /api/board` returns it in `X-Board-Revision`, and
-`PUT /api/board` / `POST /api/chat` take it as `If-Match`, answering `409` when another
-writer got there first. Databases created before the column existed are migrated on
-startup (`ALTER TABLE ... ADD COLUMN`), and clients that omit `If-Match` still work.
+token. Every write bumps it, `GET /api/boards/{id}/board` returns it in
+`X-Board-Revision`, and `PUT` / `POST /api/chat` take it as `If-Match`, answering `409`
+when another writer got there first. Clients that omit `If-Match` still work.
+
+### Migrating from the pre-Part-11 schema
+
+Databases created before Part 11 are migrated on startup:
+
+- `users` gains `password_hash` (ADD COLUMN). The demo `user` row's hash is backfilled
+  from the old hardcoded `password`, so that credential keeps working.
+- `boards` is rebuilt (SQLite cannot drop a table-level `UNIQUE(user_id)`): every row is
+  copied verbatim with `name = 'Untitled board'`, keeping ids, data, and revisions.
 
 Ids are opaque stable strings. The client mints new card ids locally with `createId` in
 `frontend/src/lib/kanban.ts` and the server stores them verbatim, so ownership of id
-generation stays with the client. A server-generated id would be the change to make if
-ids ever need to be unguessable or globally unique.
+generation stays with the client. Board ids, by contrast, are server-assigned integers.
 
 ## The JSON contract
 
@@ -78,7 +87,9 @@ field.
     "card-1": {
       "id": "card-1",
       "title": "Align roadmap themes",
-      "details": "Draft quarterly themes with impact statements and metrics."
+      "details": "Draft quarterly themes with impact statements and metrics.",
+      "dueDate": "2026-03-01",
+      "labels": ["design", "urgent"]
     }
   }
 }
@@ -94,6 +105,8 @@ field.
 | `cards.*.id` | string | `str` | `string` | Same value as the key |
 | `cards.*.title` | string | `str` | `string` | Card heading |
 | `cards.*.details` | string | `str` | `string` | Body text |
+| `cards.*.dueDate` | string or null | `date \| None` | `string \| null` | Optional ISO due date |
+| `cards.*.labels` | array of string | `list[str]` | `string[]` | Optional labels; empty means none |
 
 Two notes on shape:
 
@@ -131,14 +144,12 @@ Deliberately **not** enforced, to avoid speculative validation:
 
 ## Not modelled
 
-- **Users and passwords.** Part 4 hardcodes `user` / `password`. The `users` table exists
-  so multiple users are possible later, but no credential columns are defined yet, and no
-  password hash is stored. Deciding on hashing is Part 4's job.
-- **Chat history.** Part 9 sends conversation history to the model. The plan keeps that in
-  the browser, so it is not persisted.
+- **Chat history.** The plan keeps that in the browser, so it is not persisted.
 - **Board snapshots.** Every save overwrites `data`; there is no history to roll back
   to. (Conflicting concurrent writes are detected via `revision`, above, but past
   states are not kept.)
+- **Board sharing between users.** A board belongs to exactly one user. There is no
+  membership table.
 
 ## Creating the database
 
@@ -147,6 +158,19 @@ The file is created on first use if it does not exist, and the schema is applied
 container's data directory, which is a mounted volume so the board survives
 `docker compose down` and image rebuilds.
 
-On startup the app also seeds the single `user` row, and that user's board if they have
-none, from the same data the frontend ships as `initialData`. A fresh database therefore
-comes up with a working board rather than an empty one.
+On startup the app also seeds the demo `user` row (with a real password hash) and that
+user's board if they have none, from the same data the frontend ships as `initialData`.
+A newly **registered** user instead gets one empty board named "First board" with the
+standard five columns, so a new account starts with a clean structure rather than demo
+cards.
+
+## API surface (Part 11)
+
+- `POST /api/register {username, password}` — creates the account, seeds a board, signs in
+- `POST /api/login` / `POST /api/logout` / `GET /api/me` — as before, verified against the stored hash
+- `GET /api/boards` — the signed-in user's boards with card counts
+- `POST /api/boards {name}` — creates a board (five empty columns)
+- `PUT /api/boards/{id} {name}` — renames; `DELETE /api/boards/{id}` — deletes
+- `GET` / `PUT /api/boards/{id}/board` — the `BoardData` blob, with the revision header and `If-Match` contract above
+- `POST /api/chat {board_id, message, history}` — the AI edits the named board only
+- `GET` / `PUT /api/board` — legacy aliases for the user's first board, kept for older clients

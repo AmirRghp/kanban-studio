@@ -16,16 +16,17 @@ backend/
     ai.py               OpenRouter client, error types, prompt constants
     chat.py             prompt building and one turn of conversation
     ops.py              the operation models, their JSON schema, and apply_operations
-    auth.py             credentials, the session user model, and the require_user dependency
-    db.py               SQLite schema, seeding, load_board and save_board
+    auth.py             password hashing, the session user model, require_user
+    db.py               SQLite schema, migrations, seeding, and the board queries
     models.py           Card, Column, BoardData. The JSON contract, see docs/DATA-MODEL.md
   tests/
     conftest.py         builds a stand-in static dir so routing is testable without a build
     test_health.py      the health endpoint
     test_static.py      index, assets, SPA fallback, traversal, unbuilt-frontend
     test_models.py      the board JSON contract and its invariants
-    test_auth.py        login, logout, session handling
-    test_board.py       the board API, per-user isolation, and seed drift
+    test_auth.py        registration, login, logout, session handling
+    test_board.py       board CRUD, per-user isolation, and seed drift
+    test_revision.py    If-Match / X-Board-Revision optimistic concurrency
     test_ai.py          the AI route, client, retry logic, and one live test
     test_ops.py         each operation, skipping bad ones, and the invariants
     test_chat.py        the chat route, the prompt, and one live test
@@ -46,20 +47,22 @@ the logs. `https_only` is off for the same reason, and compose maps the port to
 ## Board revisions (optimistic concurrency)
 
 The `boards` table carries a `revision` integer, bumped on every write.
-`GET /api/board` returns the board plus an `X-Board-Revision` header; `PUT /api/board`
-and `POST /api/chat` accept `If-Match` with the revision the caller read and answer
-`409` when another writer got there first, so two tabs (or a chat turn and a manual
-save) can no longer silently clobber each other. `save_board`/`update_board` implement
-the check in `app/db.py`, which also migrates pre-revision databases on startup.
-Clients that omit `If-Match` still work (the write is unconditional).
+`GET /api/boards/{id}/board` returns the board plus an `X-Board-Revision` header;
+`PUT /api/boards/{id}/board` and `POST /api/chat` accept `If-Match` with the revision the
+caller read and answer `409` when another writer got there first, so two tabs (or a chat
+turn and a manual save) can no longer silently clobber each other. `save_board` /
+`update_board` implement the check in `app/db.py`, which also migrates pre-revision
+databases on startup. Clients that omit `If-Match` still work (the write is
+unconditional).
 
 ## Current state
 
-All ten parts of `docs/PLAN.md` are implemented: static serving, sign-in, the board API
-with optimistic-concurrency revisions, OpenRouter, and board-aware chat. The frontend is
-copied into the image at `/app/app/static`. A bare checkout has no
-`static/` directory, so `/` returns a 503 explaining that the frontend has not been built,
-rather than an opaque 500 from a missing file.
+Parts 1-10 of `docs/PLAN.md` are implemented: static serving, sign-in, the board API with
+optimistic-concurrency revisions, OpenRouter, and board-aware chat. Part 11 adds real
+accounts, multiple boards per user, and card due dates and labels. The frontend is copied
+into the image at `/app/app/static`. A bare checkout has no `static/` directory, so `/`
+returns a 503 explaining that the frontend has not been built, rather than an opaque 500
+from a missing file.
 
 `create_app(static_dir, db_path, session_secret=None)` is a factory rather than a bare
 module-level app so tests can point it at temporary directories and their own database. The
@@ -77,17 +80,82 @@ not call `set_cookie` by hand: the middleware will not recognise a raw cookie on
 request, `unsign` fails, and every authenticated call returns 401. That bug landed here
 briefly and `test_me_returns_the_username_when_signed_in` caught it.
 
-`require_user` in `app/auth.py` is the dependency for protected endpoints. `/api/me` uses
-it, and Part 6 applies the same one to the board routes. The signing secret comes from
-`SESSION_SECRET`, defaulting to an obviously insecure value that is acceptable only because
-this runs on localhost. `https_only` is off for the same reason.
+`require_user` in `app/auth.py` is the dependency for every protected endpoint: `/api/me`,
+all the `/api/boards` routes, the board data routes, `/api/chat`, and `/api/ai/ping`. The
+signing secret comes from `SESSION_SECRET`, defaulting to an obviously insecure value that
+is acceptable only because this runs on localhost. `https_only` is off for the same reason.
+
+## Accounts and passwords
+
+Part 11 replaced the hardcoded credential with real accounts. `auth.py` holds the whole
+of it, using the stdlib only, so there is no new dependency:
+
+- `hash_password` returns `pbkdf2_sha256$<iterations>$<salt hex>$<hash hex>`. Writing the
+  algorithm and cost into the stored string means both can be raised later without a
+  migration. `ITERATIONS` is 240k, roughly 100 ms per verify, which is normal for an
+  interactive login.
+- `verify_password` parses that string and compares with `secrets.compare_digest`, so a
+  wrong password cannot be told apart from a wrong username by timing. A stored value
+  that does not parse is a failed verify, not a crash.
+- `validate_registration` returns a human-readable reason or `None`. Username is 3-30
+  characters of letters, numbers, hyphen and underscore; password is at least 8.
+
+`db.check_credentials` looks the user up and then verifies the hash. A row with an empty
+`password_hash` fails the check, which is what makes a pre-Part-11 row unusable until the
+seed backfills it.
+
+`db.create_user` lets `sqlite3.IntegrityError` out as a `UserExists`, which the route maps
+to 409. Registration seeds the account with a board named "First board" holding
+`EMPTY_BOARD`: the five standard columns and no cards, so a new account starts clean
+rather than inheriting the demo cards.
+
+The demo account is `user` / `password`, now a real row with a real hash, seeded by
+`_seed_demo_user` on every startup. If the row exists with an empty hash, the seed
+backfills it, which is how a database created before Part 11 keeps that credential
+working.
+
+## Migrations
+
+`db.initialise` runs migrations before `executescript(SCHEMA)`, so a fresh file is
+created directly at the current shape and an old file is brought forward. Every step is
+guarded by a `PRAGMA table_info` check, so `initialise` stays idempotent.
+
+- `users` gains `password_hash` with `ALTER TABLE ... ADD COLUMN`.
+- `boards` gains `revision`, then is **rebuilt** if it still carries the old
+  `UNIQUE(user_id)` or has no `name`. SQLite cannot drop a table-level constraint, so
+  `_rebuild_boards_table` renames the table, recreates it from `SCHEMA`, copies every row
+  with `name = 'Untitled board'` keeping ids, data and revisions, then drops the original.
+
+Row ids and revisions survive a rebuild, so a client holding an `If-Match` value is not
+broken by an upgrade.
 
 ## The board API
 
-`GET /api/board` returns the signed-in user's `BoardData`; `PUT /api/board` replaces it.
-Both are guarded by `require_user` and scoped by `request.session`'s username, so a user
-can only ever reach their own row. `PUT` validates through the same `BoardData` model as
-everything else, so an invalid board returns 422 and never reaches the database.
+Boards are addressed by id and scoped to the signed-in user on every query.
+
+| Route | Does |
+|---|---|
+| `POST /api/register` | Create the account, seed a board, sign in |
+| `POST /api/login` / `POST /api/logout` / `GET /api/me` | Session lifecycle |
+| `GET /api/boards` | The user's boards, oldest first, with card counts |
+| `POST /api/boards` | Create a board from `EMPTY_BOARD` |
+| `PUT /api/boards/{id}` | Rename. Empty name is 422 |
+| `DELETE /api/boards/{id}` | Delete |
+| `GET`/`PUT /api/boards/{id}/board` | The `BoardData` blob, with the revision contract |
+| `POST /api/chat` | The AI edits the board named in `board_id` |
+| `GET`/`PUT /api/board` | Legacy aliases for the user's **first** board |
+
+The two legacy routes exist so a client that predates Part 11 keeps working. They resolve
+the user's first board, which is always the seeded one, and delegate to the board-scoped
+handlers. `include_in_schema=False` keeps them out of the OpenAPI document.
+
+Every query goes through `db._owned_board`, which joins `boards` to `users` on
+`username`. A board belonging to someone else is `BoardNotFound`, mapped to 404, so
+ownership is never leaked as a distinguishable error. `rename_board` and `delete_board`
+call it before writing, not after.
+
+`PUT` validates through the same `BoardData` model as everything else, so an invalid board
+returns 422 and never reaches the database.
 
 Two implementation notes:
 
@@ -168,7 +236,10 @@ It skips itself if `OPENROUTER_API_KEY` is unset, so it is safe to run anywhere.
 
 ## The AI editing the board
 
-`POST /api/chat` takes `{message, history}` and returns `{reply, board, warnings}`.
+`POST /api/chat` takes `{board_id, message, history}` and returns `{reply, board, warnings}`.
+`board_id` is required, not optional: the AI must be told which board to edit, and the
+route resolves it against the signed-in user, so a caller cannot aim it at someone else's
+board.
 
 **The model is asked what to change, never trusted to return the board.** It replies with
 a `reply` plus a list of operations, and `ops.apply_operations` applies each one to the
@@ -184,6 +255,25 @@ reads the reply cannot drift apart. Do not hand-write a second copy.
 model-chosen id can never collide with an existing card or break the board's invariants.
 (The interactive UI deliberately mints ids client-side instead; that is a different
 writer with different constraints, see `docs/DATA-MODEL.md`.)
+
+`create_card` and `update_card` also accept optional `due_date` and `labels`, so the AI can
+set them. Two details in `UpdateCard` are load-bearing:
+
+- **Absent means "keep what is there".** `update_card` replaces the card wholesale, so a
+  model that only meant to fix a typo would otherwise silently wipe the due date.
+  `_update_card` consults `operation.model_fields_set`, which pydantic fills with exactly
+  the keys the reply contained, and writes only those two fields.
+- **Blank labels are dropped** by a `field_validator(mode="before")`, so an empty string
+  cannot become a chip that renders as nothing.
+
+Do **not** reintroduce `due_date_set` / `labels_set` boolean fields. That is what this
+code used to carry, and it was silently broken: nothing ever set them, so a model asking
+to change a due date got a confident reply and an unchanged card. Pydantic already tracks
+the distinction, and a companion flag could only ever be trusted to the model.
+`test_a_due_date_from_the_model_is_applied` and
+`test_the_due_date_flags_are_not_part_of_the_wire_contract` both fail if it returns, and
+they go through `ChatResponse.model_validate` deliberately, since a hand-built
+`UpdateCard` skips the parse step where "absent" is decided.
 
 `db.update_board` does the read, the transform, and the write in a single transaction, so a
 chat cannot interleave with a manual save and clobber it. The prompt is built from a
@@ -266,8 +356,10 @@ Do not rearrange these. FastAPI matches in registration order, so the catch-all 
 last:
 
 1. `GET /api/health`
-2. `POST /api/login`, `POST /api/logout`, `GET /api/me`
-3. `GET /api/board`, `PUT /api/board`, `POST /api/chat`, `GET /api/ai/ping`
+2. `POST /api/register`, `POST /api/login`, `POST /api/logout`, `GET /api/me`
+3. `GET`/`POST /api/boards`, `PUT`/`DELETE /api/boards/{id}`,
+   `GET`/`PUT /api/boards/{id}/board`, the legacy `GET`/`PUT /api/board`,
+   `POST /api/chat`, `GET /api/ai/ping`
 4. `GET /api/{rest:path}` — 404 for unknown API routes, so a typo returns a JSON 404
    instead of the SPA's HTML with a 200
 5. `mount("/_next", ...)` — assets, via `StaticFiles`

@@ -20,7 +20,7 @@ type BoardController = {
   getRevision: () => number;
 };
 
-export const useBoard = (): BoardController => {
+export const useBoard = (boardId: number | null): BoardController => {
   const [board, setBoard] = useState<BoardData | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +34,9 @@ export const useBoard = (): BoardController => {
   // The server's revision for the board in `current`. Sent as If-Match on writes so a
   // stale writer gets a 409 instead of silently clobbering another writer's change.
   const revision = useRef(0);
+  // Which board the pending save belongs to. Switching boards cancels the flush, and
+  // the id check keeps a slow in-flight save from writing board A's data to board B.
+  const savingFor = useRef<number | null>(null);
 
   const clearPending = useCallback(() => {
     if (timer.current) {
@@ -44,13 +47,24 @@ export const useBoard = (): BoardController => {
   }, []);
 
   const persist = useCallback(
-    async (snapshot: BoardData, expectedRevision: number, keepalive: boolean) => {
+    async (
+      forBoardId: number,
+      snapshot: BoardData,
+      expectedRevision: number,
+      keepalive: boolean
+    ) => {
       setIsSaving(true);
       try {
-        await saveBoard(snapshot, expectedRevision, keepalive);
-        revision.current = expectedRevision + 1;
-        setError(null);
+        await saveBoard(forBoardId, snapshot, expectedRevision, keepalive);
+        if (savingFor.current === forBoardId) {
+          revision.current = expectedRevision + 1;
+          setError(null);
+        }
       } catch (caught) {
+        if (savingFor.current !== forBoardId) {
+          // The user switched boards; the save concerned a board they left.
+          return;
+        }
         if (caught instanceof RevisionConflictError) {
           // Another writer (second tab or a chat turn) got there first. The local
           // board stays visible; the user is told to reload rather than silently
@@ -77,17 +91,40 @@ export const useBoard = (): BoardController => {
         timer.current = null;
       }
       const snapshot = unsaved.current;
-      if (!snapshot) return;
+      if (!snapshot || savingFor.current === null) return;
       unsaved.current = null;
-      void persist(snapshot, revision.current, keepalive);
+      void persist(savingFor.current, snapshot, revision.current, keepalive);
     },
     [persist]
   );
 
   useEffect(() => {
+    if (boardId === null) {
+      setBoard(null);
+      setError(null);
+      return;
+    }
     let cancelled = false;
 
-    fetchBoard()
+    // Leaving a board must not discard unsaved edits: fire any pending save for the
+    // outgoing board first (fire-and-forget; the guard inside persist already keys
+    // error reporting to the board being left), then drop the old state.
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (unsaved.current && savingFor.current !== null) {
+      const outgoing = savingFor.current;
+      const snapshot = unsaved.current;
+      unsaved.current = null;
+      void persist(outgoing, snapshot, revision.current, false);
+    }
+    current.current = null;
+    setBoard(null);
+    setError(null);
+    savingFor.current = boardId;
+
+    fetchBoard(boardId)
       .then((loaded: BoardWithRevision) => {
         if (cancelled) return;
         current.current = loaded.board;
@@ -95,13 +132,13 @@ export const useBoard = (): BoardController => {
         setBoard(loaded.board);
       })
       .catch(() => {
-        if (!cancelled) setError("Could not load your board.");
+        if (!cancelled) setError("Could not load this board.");
       });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [boardId, persist]);
 
   // Anything still unsaved when the tab is hidden would otherwise be lost, since the
   // debounce may not have fired yet.
@@ -153,5 +190,12 @@ export const useBoard = (): BoardController => {
     [clearPending]
   );
 
-  return { board, isSaving, error, update, replaceBoard, getRevision: () => revision.current };
+  return {
+    board,
+    isSaving,
+    error,
+    update,
+    replaceBoard,
+    getRevision: () => revision.current,
+  };
 };

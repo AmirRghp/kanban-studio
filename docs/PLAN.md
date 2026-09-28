@@ -695,3 +695,101 @@ code, since addressed or explicitly accepted:
   code; it is now commented as load-bearing in the spec itself.
 - Accepted for the MVP: single hardcoded account (`user` / `password`), loopback-only
   port binding, and no board history (conflicts are detected, not rolled back).
+
+Both MVP limitations above are lifted in Part 11.
+
+---
+
+## Part 11: Real accounts, multiple boards, due dates and labels
+
+Part 11 lifts the two MVP limitations: one hardcoded user, one board per user. It adds
+real registered accounts with hashed passwords, any number of boards per user, optional
+due dates and labels on cards (also editable by the AI), and a pass of UI polish across
+the whole app. It is recorded here because Parts 1-10 are history; the same conventions
+apply: tests first, one part at a time, no box ticked without a passing test.
+
+### Locked decisions for Part 11
+
+| Area | Decision | Why |
+|---|---|---|
+| Password hashing | stdlib `hashlib.pbkdf2_hmac` (SHA-256, 240k iterations), stored as `pbkdf2_sha256$240000$salt$hash` | No new dependency; constant-time verify with `secrets.compare_digest`; a known algorithm written into the stored string so the cost can be raised later without a migration |
+| Registration | `POST /api/register {username, password}`, signs the user in on success | One round trip; there is no admin concept in a local app |
+| Existing demo user | Seeded with password `password` | Backwards compatible: the old hardcoded credential keeps working, but is now a real row with a real hash |
+| Boards table | Rebuilt without `UNIQUE(user_id)`, gains `name TEXT NOT NULL` | The documented change in DATA-MODEL.md. Old databases are migrated on startup, keeping data and revisions |
+| Board API | `GET /api/boards` (list), `POST /api/boards` (create), `PUT /api/boards/{id}` (rename), `DELETE /api/boards/{id}`, `GET/PUT /api/boards/{id}/board` (data) | The old `GET/PUT /api/board` routes remain as aliases for the user's first board during the transition, so any client not yet updated keeps working |
+| Per-board chat | `POST /api/chat` gains `board_id` | The AI edits the board you are looking at |
+| New-user seeding | A registration creates one board named "First board" with the standard five columns, empty of cards | The demo `user` keeps its seeded board; new accounts start with a clean structure |
+| Due dates and labels | Optional `dueDate` (ISO date string) and `labels` (string list) on `Card`, in the JSON blob | No schema change; both flow through the same whole-board PUT contract; the AI's create/update ops accept them too |
+| UI polish | Top bar with board switcher, keyboard drag support, focus rings, conflict banner with a Reload action | The impeccable pass: same tokens, same visual language, better states |
+
+### Substeps
+
+Backend:
+- [x] `app/auth.py`: `hash_password`, `verify_password`, registration validation, `RegisterRequest`; remove the hardcoded constants
+- [x] `db.py`: migrate `users` to have `password_hash`; migrate `boards` (drop the UNIQUE, add `name`); seed the demo user's hash and board on first run
+- [x] `db.py`: `create_board`, `list_boards`, `rename_board`, `delete_board`, board-scoped `load_board_with_revision` / `save_board` / `update_board`
+- [x] `main.py`: `POST /api/register`; `GET/POST /api/boards`, `PUT/DELETE /api/boards/{id}`, board-scoped data routes, `board_id` on the chat route
+- [x] `models.py` / `ops.py`: optional `dueDate` and `labels` on `Card`, and on the AI's `create_card` / `update_card`
+
+Frontend:
+- [x] `api.ts`: register, board list/create/rename/delete, board-scoped load/save/chat
+- [x] `LoginView`: Sign in / Create account tabs
+- [x] `BoardSwitcher` in a top bar: list boards, create, rename, delete; Workspace loads the selected board and passes `boardId` to the chat
+- [x] Card due dates and labels in the edit form, badges on the card and the drag preview
+- [x] Polish: keyboard drag (`KeyboardSensor`), visible focus rings, conflict banner with Reload, refined empty/loading/error states, responsive top bar
+
+E2E:
+- [x] Rework the auth suite for register + login; board suite for multi-board (each spec creates its own board); keep the chat suite's PUT-absorption invariant under the new routes
+- [x] Update `docs/DATA-MODEL.md`, both `AGENTS.md` files, and `README.md`
+
+Tests: registration (success, duplicate, validation), password verification, migration of an old database (user hash + board rename + UNIQUE drop, keeping data and revision), board CRUD with per-user isolation, board-scoped revisions, due dates and labels round-tripping, AI ops with due dates and labels, chat scoped to the requested board, RTL for the switcher / register / due-date form, Playwright for register + multi-board + due dates.
+
+### One deviation from the plan above
+
+The switcher is named `TopBar.tsx` rather than a separate `BoardSwitcher` component. It is
+one sticky header holding the switcher, the save status, and the sign-out button, and
+splitting the switcher out would have meant threading the same props through two layers
+for no gain.
+
+### One defect the tests missed, and the fix
+
+`UpdateCard` originally carried `due_date_set` and `labels_set` boolean fields to express
+"absent means keep what is there". Nothing ever set them, so a model asking to change a
+due date got a confident reply and an unchanged card. The tests passed because they
+constructed `UpdateCard(..., due_date_set=True)` by hand, which skips the parse path where
+the distinction is actually decided.
+
+Fixed by deleting both fields and reading `operation.model_fields_set` in `_update_card`,
+which pydantic already fills with exactly the keys the reply contained. That is smaller
+than what it replaced, cannot be spoofed by the model, and keeps the two booleans out of
+`CHAT_RESPONSE_SCHEMA`. The due-date tests now go through `ChatResponse.model_validate`;
+`test_a_due_date_from_the_model_is_applied` and
+`test_the_due_date_flags_are_not_part_of_the_wire_contract` both fail if the fields return.
+Verified by reintroducing the bug: the first two fail.
+
+Success criteria:
+- [x] A visitor can register a real account and gets a clean five-column board
+      (`test_registration_creates_a_user_and_signs_them_in`,
+      `test_a_registered_user_gets_a_starter_board`, and the Playwright spec of the same name)
+- [x] `user` / `password` still signs in and still sees its board
+      (`test_an_old_database_is_migrated_keeping_data_and_revision` covers the backfill on an
+      upgraded database; `test_first_run_seeds_a_five_column_board` covers a fresh one)
+- [x] A user can create, rename, switch between, and delete boards, and one user's boards
+      are never visible to another (`test_a_user_can_create_and_list_boards`,
+      `test_a_board_can_be_renamed`, `test_a_board_can_be_deleted`,
+      `test_another_users_board_is_invisible`, `test_deleting_another_users_board_is_refused`,
+      plus the Playwright switcher specs)
+- [x] Cards can carry a due date and labels, set by hand or by the AI, and both persist
+      (by hand: Playwright "a card's due date and labels survive a reload"; by the AI:
+      `test_a_due_date_from_the_model_is_applied`,
+      `test_update_card_clears_a_due_date_only_when_asked`)
+- [x] The full suite, build, lint, and typecheck pass, and the e2e run makes no model calls
+- [ ] The running app, exercised in a real browser, is visibly more polished than before
+
+Verified: 152 backend tests passed with 2 `live` tests skipped, 44 vitest, 25 Playwright,
+`npm run lint` and `npx tsc --noEmit` both exit 0, and the e2e run makes no OpenRouter
+call. `npx tsc --noEmit` used to report errors in the two oldest test files, which relied
+on Vitest globals; they now import from `vitest` explicitly and the typecheck is clean.
+
+The last criterion is unticked because "visibly more polished" is a judgement that needs a
+human looking at the app, not something a passing test can assert.

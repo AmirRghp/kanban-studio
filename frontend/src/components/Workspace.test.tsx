@@ -24,10 +24,13 @@ const setupFetch = (
   const puts: PutCall[] = [];
 
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === "/api/board" && (!init || init.method === undefined)) {
+    if (url === "/api/boards") {
+      return stub(200, [{ id: 1, name: "First board", cardCount: 8 }]);
+    }
+    if (url === "/api/boards/1/board" && (!init || init.method === undefined)) {
       return overrides.get ? overrides.get() : stub(200, initialData);
     }
-    if (url === "/api/board" && init?.method === "PUT") {
+    if (url === "/api/boards/1/board" && init?.method === "PUT") {
       const board = JSON.parse(String(init.body));
       puts.push({ board, keepalive: Boolean(init.keepalive) });
       return overrides.put ? overrides.put(board) : stub(200, board);
@@ -46,9 +49,13 @@ const putCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
 
 // The board and its persistence live in Workspace now, so that is what the board tests
 // drive. Rendering Workspace keeps their original intent: real data flow, real saving.
+// The heading renders before the board arrives (the TopBar is up immediately), so the
+// helper also waits for the grid. Callers expecting custom columns await their own
+// marker instead of the helper's return value.
 const renderBoard = async () => {
   render(<Workspace username="user" onSignOut={() => {}} />);
-  return screen.findByRole("heading", { name: "Kanban Studio" });
+  await screen.findByRole("heading", { name: "Kanban Studio" });
+  await screen.findByTestId("board-grid");
 };
 
 describe("board persistence", () => {
@@ -86,23 +93,41 @@ describe("board persistence", () => {
     expect(screen.queryByText("Align roadmap themes")).toBeNull();
   });
 
-  it("shows a loading state before the board arrives", () => {
-    setupFetch();
+  it("shows a loading state before the board arrives", async () => {
+    // The boards list resolves, but the board fetch never does, so the loading
+    // state is actually observable rather than raced by an instant stub.
+    let release: (value: unknown) => void = () => {};
+    setupFetch({
+      get: () => new Promise((resolve) => {
+        release = resolve;
+      }) as never,
+    });
     render(<Workspace username="user" onSignOut={() => {}} />);
 
-    expect(screen.getByText("Loading your board...")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Kanban Studio" })).toBeNull();
+    // The board grid is not there yet, but the top bar is up immediately.
+    await screen.findByRole("heading", { name: "Kanban Studio" });
+    await waitFor(() => {
+      expect(screen.getByTestId("board-loading")).toHaveTextContent(
+        "Loading your board..."
+      );
+    });
+    expect(screen.queryByTestId(/column-/i)).toBeNull();
+
+    release(stub(200, initialData));
+    expect(await screen.findByTestId("board-grid")).toBeInTheDocument();
   });
 
   it("surfaces a failure to load", async () => {
     setupFetch({ get: () => stub(500) });
     render(<Workspace username="user" onSignOut={() => {}} />);
 
+    // The failure is reported where the board would be, not swallowed into a spinner.
     await waitFor(() => {
-      expect(screen.getByTestId("save-status")).toHaveTextContent(
-        "Could not load your board."
+      expect(screen.getByTestId("board-loading")).toHaveTextContent(
+        "Could not load this board."
       );
     });
+    expect(screen.queryByTestId("board-grid")).toBeNull();
   });
 
   it("adds a card and sends it in a PUT", async () => {

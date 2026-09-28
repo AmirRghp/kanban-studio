@@ -172,5 +172,8 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# Local editor/tooling project id, not part of the project
+.freebuff/
+
 .DS_Store
 

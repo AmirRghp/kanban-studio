@@ -76,6 +76,7 @@ def build_messages(
 def run_chat(
     db_path: Path,
     username: str,
+    board_id: int,
     message: str,
     history: list[ChatMessage],
     client: AiClient,
@@ -91,9 +92,9 @@ def run_chat(
     # update_board's own transaction, which re-reads the board. With expected_revision
     # set, a board change made between the snapshot and the apply raises
     # RevisionConflict (surfaced as 409) instead of being merged away silently.
-    loaded = load_board_with_revision(db_path, username)
+    loaded = load_board_with_revision(db_path, username, board_id)
     if loaded is None:
-        raise LookupError(f"no board for user {username!r}")
+        raise LookupError(f"no board {board_id} for user {username!r}")
     current, snapshot_revision = loaded
 
     reply = client.complete_json(
@@ -127,7 +128,7 @@ def run_chat(
         return new_board
 
     updated, new_revision = update_board(
-        db_path, username, change, expected_revision=expected_revision
+        db_path, username, board_id, change, expected_revision=expected_revision
     )
     return ChatResult(
         reply=parsed.reply, board=updated, warnings=warnings, revision=new_revision

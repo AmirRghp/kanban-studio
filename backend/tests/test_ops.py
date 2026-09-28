@@ -2,6 +2,7 @@ import pytest
 
 from app.models import BoardData
 from app.ops import (
+    CHAT_RESPONSE_SCHEMA,
     ChatResponse,
     CreateCard,
     DeleteCard,
@@ -296,3 +297,183 @@ def test_chat_response_accepts_no_operations() -> None:
     parsed = ChatResponse.model_validate({"reply": "Paris.", "operations": []})
 
     assert parsed.operations == []
+
+
+# ---------------------------------------------------------------- due dates and labels
+
+
+def _operations_from_reply(operation: dict) -> list:
+    """Parse one operation the way a real model reply is parsed.
+
+    Constructing `UpdateCard` by hand would skip the step this whole section depends on:
+    a due date or label list is only applied when the reply actually mentioned it, and
+    that is decided by which keys the parsed model was given. `_update_card` reads
+    `model_fields_set`, so a hand-built instance can set fields the model never asked to
+    change, and can omit fields it did. Every test that depends on "absent means keep"
+    must go through here.
+    """
+    return ChatResponse.model_validate({"reply": "ok", "operations": [operation]}).operations
+
+
+def test_a_due_date_from_the_model_is_applied() -> None:
+    # The regression test for the silent no-op: the operation carried a due date and a
+    # label list, and both have to land on the card. This asserts through the parse path
+    # on purpose, because that is the only path a real reply takes.
+    result, warnings = apply_operations(
+        board(),
+        _operations_from_reply(
+            {
+                "op": "update_card",
+                "card_id": "k1",
+                "title": "Renamed",
+                "details": "d1",
+                "due_date": "2026-05-05",
+                "labels": ["urgent"],
+            }
+        ),
+    )
+
+    assert warnings == []
+    assert result.cards["k1"].title == "Renamed"
+    assert result.cards["k1"].due_date is not None
+    assert result.cards["k1"].due_date.isoformat() == "2026-05-05"
+    assert result.cards["k1"].labels == ["urgent"]
+
+
+def test_the_due_date_flags_are_not_part_of_the_wire_contract() -> None:
+    # The old implementation carried `due_date_set` / `labels_set` booleans that nothing
+    # ever set, so the model could never apply a due date. They must not creep back in as
+    # fields, least of all ones the model is asked to fill.
+    assert "due_date_set" not in CHAT_RESPONSE_SCHEMA["$defs"]["UpdateCard"]["properties"]
+    assert "labels_set" not in CHAT_RESPONSE_SCHEMA["$defs"]["UpdateCard"]["properties"]
+
+
+def test_create_card_can_set_a_due_date_and_labels() -> None:
+    result, warnings = apply_operations(
+        board(),
+        [
+            CreateCard(
+                op="create_card",
+                column_id="c1",
+                title="Planned",
+                details="d",
+                due_date="2026-03-01",
+                labels=["design", "urgent"],
+            )
+        ],
+    )
+
+    assert warnings == []
+    created = next(card for card in result.cards.values() if card.title == "Planned")
+    assert created.due_date is not None and created.due_date.isoformat() == "2026-03-01"
+    assert created.labels == ["design", "urgent"]
+
+
+def test_update_card_keeps_a_due_date_it_does_not_mention() -> None:
+    start, _ = apply_operations(
+        board(),
+        [
+            CreateCard(
+                op="create_card",
+                column_id="c1",
+                title="Planned",
+                details="d",
+                due_date="2026-03-01",
+                labels=["design"],
+            )
+        ],
+    )
+    created_id = next(k for k, v in start.cards.items() if v.title == "Planned")
+
+    result, warnings = apply_operations(
+        start,
+        _operations_from_reply(
+            {
+                "op": "update_card",
+                "card_id": created_id,
+                "title": "New",
+                "details": "x",
+            }
+        ),
+    )
+
+    assert warnings == []
+    assert result.cards[created_id].due_date is not None
+    assert result.cards[created_id].labels == ["design"]
+
+
+def test_update_card_clears_a_due_date_only_when_asked() -> None:
+    start, _ = apply_operations(
+        board(),
+        [
+            CreateCard(
+                op="create_card",
+                column_id="c1",
+                title="Planned",
+                details="d",
+                due_date="2026-03-01",
+                labels=["design"],
+            )
+        ],
+    )
+    created_id = next(k for k, v in start.cards.items() if v.title == "Planned")
+
+    # Built through the model's wire shape, not by hand: the due date is cleared by an
+    # explicit null, which `model_fields_set` has to notice.
+    cleared, _ = apply_operations(
+        start,
+        _operations_from_reply(
+            {
+                "op": "update_card",
+                "card_id": created_id,
+                "title": "New",
+                "details": "x",
+                "due_date": None,
+                "labels": [],
+            }
+        ),
+    )
+
+    assert cleared.cards[created_id].due_date is None
+    assert cleared.cards[created_id].labels == []
+
+
+def test_update_card_strips_blank_labels_from_the_model() -> None:
+    result, _ = apply_operations(
+        board(),
+        _operations_from_reply(
+            {
+                "op": "update_card",
+                "card_id": "k1",
+                "title": "One",
+                "details": "d1",
+                "labels": ["a", "", "  ", "b"],
+            }
+        ),
+    )
+
+    assert result.cards["k1"].labels == ["a", "b"]
+
+
+def test_a_due_date_op_survives_the_chat_schema_round_trip() -> None:
+    # The schema sent to the model is derived from these models, so an op carrying
+    # planning fields must still validate against ChatResponse.
+    reply = ChatResponse.model_validate(
+        {
+            "reply": "ok",
+            "operations": [
+                {
+                    "op": "create_card",
+                    "column_id": "c1",
+                    "title": "T",
+                    "details": "d",
+                    "due_date": "2026-03-01",
+                    "labels": ["a"],
+                }
+            ],
+        }
+    )
+
+    op = reply.operations[0]
+    assert op.due_date is not None and op.due_date.isoformat() == "2026-03-01"
+    assert op.labels == ["a"]

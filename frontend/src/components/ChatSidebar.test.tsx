@@ -28,17 +28,20 @@ const boardWith = (title: string): BoardData => ({
 
 const setup = (
   options: {
-    chat?: () => ReturnType<typeof stub>;
+    chat?: () => Promise<ReturnType<typeof stub>> | ReturnType<typeof stub>;
     board?: BoardData;
   } = {}
 ) => {
-  const chatBodies: { message: string; history: unknown[] }[] = [];
+  const chatBodies: { message: string; history: unknown[]; board_id: number }[] = [];
 
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === "/api/board" && (!init || init.method === undefined)) {
+    if (url === "/api/boards") {
+      return stub(200, [{ id: 1, name: "First board", cardCount: 8 }]);
+    }
+    if (url === "/api/boards/1/board" && (!init || init.method === undefined)) {
       return stub(200, options.board ?? initialData);
     }
-    if (url === "/api/board" && init?.method === "PUT") {
+    if (url === "/api/boards/1/board" && init?.method === "PUT") {
       return stub(200, JSON.parse(String(init.body)));
     }
     if (url === "/api/chat") {
@@ -61,6 +64,7 @@ const setup = (
 const renderWorkspace = async () => {
   render(<Workspace username="user" onSignOut={() => {}} />);
   await screen.findByRole("heading", { name: "Kanban Studio" });
+  await screen.findByTestId("chat-sidebar");
   return screen.getByTestId("chat-sidebar");
 };
 
@@ -150,7 +154,10 @@ describe("chat sidebar", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
-        if (url === "/api/board" && (!init || init.method === undefined)) {
+        if (url === "/api/boards") {
+          return stub(200, [{ id: 1, name: "First board", cardCount: 8 }]);
+        }
+        if (url === "/api/boards/1/board" && (!init || init.method === undefined)) {
           return stub(200, initialData);
         }
         if (url === "/api/chat") {
@@ -163,6 +170,7 @@ describe("chat sidebar", () => {
     );
     render(<Workspace username="user" onSignOut={() => {}} />);
     await screen.findByRole("heading", { name: "Kanban Studio" });
+    await screen.findByTestId("board-grid");
 
     await send("slow request");
 

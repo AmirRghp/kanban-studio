@@ -65,7 +65,7 @@ describe("fetchBoard", () => {
       vi.fn(async () => stub(200, board, { "X-Board-Revision": "7" }))
     );
 
-    await expect(fetchBoard()).resolves.toEqual({ board, revision: 7 });
+    await expect(fetchBoard(3)).resolves.toEqual({ board, revision: 7 });
   });
 
   it("falls back to revision 0 when the header is missing", async () => {
@@ -74,13 +74,13 @@ describe("fetchBoard", () => {
       vi.fn(async () => stub(200, { columns: [], cards: {} }))
     );
 
-    await expect(fetchBoard()).resolves.toMatchObject({ revision: 0 });
+    await expect(fetchBoard(3)).resolves.toMatchObject({ revision: 0 });
   });
 
   it("throws on a non-OK response", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => stub(404)));
 
-    await expect(fetchBoard()).rejects.toThrow("Unexpected status 404");
+    await expect(fetchBoard(3)).rejects.toThrow("Unexpected status 404");
   });
 });
 
@@ -90,7 +90,7 @@ describe("saveBoard", () => {
     vi.stubGlobal("fetch", fetchMock);
     const board = { columns: [], cards: {} };
 
-    await saveBoard(board, 4);
+    await saveBoard(3, board, 4);
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [
       string,
@@ -105,7 +105,7 @@ describe("saveBoard", () => {
     const fetchMock = vi.fn(async () => stub(200, {}));
     vi.stubGlobal("fetch", fetchMock);
 
-    await saveBoard({ columns: [], cards: {} }, 0, true);
+    await saveBoard(3, { columns: [], cards: {} }, 0, true);
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [
       string,
@@ -117,7 +117,7 @@ describe("saveBoard", () => {
   it("throws RevisionConflictError on 409", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => stub(409)));
 
-    await expect(saveBoard({ columns: [], cards: {} }, 1)).rejects.toBeInstanceOf(
+    await expect(saveBoard(3, { columns: [], cards: {} }, 1)).rejects.toBeInstanceOf(
       RevisionConflictError
     );
   });
@@ -126,7 +126,7 @@ describe("saveBoard", () => {
     vi.stubGlobal("fetch", vi.fn(async () => stub(500)));
 
     await expect(
-      saveBoard({ columns: [], cards: {} }, 1)
+      saveBoard(3, { columns: [], cards: {} }, 1)
     ).rejects.toThrow("Unexpected status 500");
   });
 });
@@ -143,20 +143,20 @@ describe("sendChat", () => {
     vi.stubGlobal("fetch", fetchMock);
     const history = [{ role: "user" as const, content: "first" }];
 
-    const turn = await sendChat("hello", history, 11);
+    const turn = await sendChat(3, "hello", history, 11);
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [
       string,
       RequestInit & { headers: Record<string, string>; body: string }
     ];
     expect(init.headers["If-Match"]).toBe("11");
-    expect(JSON.parse(init.body)).toEqual({ message: "hello", history });
+    expect(JSON.parse(init.body)).toEqual({ message: "hello", history, board_id: 3 });
     expect(turn.revision).toBe(12);
   });
 
   it("throws RevisionConflictError on 409", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => stub(409)));
 
-    await expect(sendChat("hi", [])).rejects.toBeInstanceOf(RevisionConflictError);
+    await expect(sendChat(3, "hi", [])).rejects.toBeInstanceOf(RevisionConflictError);
   });
 });

@@ -26,8 +26,11 @@ const setupFetch = (routes: Routes = {}) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const route = routes[key];
     if (route) return route(body);
-    if (key === "GET /api/board") return stub(200, initialData);
-    if (key === "PUT /api/board") return stub(200, body);
+    if (key === "GET /api/boards") {
+      return stub(200, [{ id: 1, name: "First board", cardCount: 8 }]);
+    }
+    if (key === "GET /api/boards/1/board") return stub(200, initialData);
+    if (key === "PUT /api/boards/1/board") return stub(200, body);
     throw new Error(`unexpected call to ${key}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -60,6 +63,8 @@ describe("App session gate", () => {
     expect(
       await screen.findByRole("heading", { name: "Kanban Studio" })
     ).toBeInTheDocument();
+    // The board grid itself loads from the API.
+    expect(await screen.findByTestId("board-grid")).toBeInTheDocument();
     expect(screen.queryByTestId("login-form")).toBeNull();
   });
 
@@ -103,6 +108,7 @@ describe("App session gate", () => {
     expect(
       await screen.findByRole("heading", { name: "Kanban Studio" })
     ).toBeInTheDocument();
+    expect(await screen.findByTestId("board-grid")).toBeInTheDocument();
     expect(screen.queryByTestId("login-form")).toBeNull();
   });
 

@@ -15,6 +15,11 @@ directory. The app is served on <http://localhost:8000> once started.
 
 Logs: `docker compose logs -f app`.
 
+`.github/workflows/ci.yml` runs `test.sh` on every push to `main` and every pull request,
+plus `npm run lint` and `npx tsc --noEmit` on a `node:24` runner. The suite job needs
+nothing but Docker, since `test.sh` is Docker-only anyway. Keep that workflow in step with
+`test.sh`: a suite added to one and not the other means CI silently stops checking it.
+
 The test suites are Docker-only by necessity, not preference. The host cannot run `npm`
 or `uv run`, because the checkout path contains a colon and both tools parse
 colon-separated path lists. See `frontend/AGENTS.md`.

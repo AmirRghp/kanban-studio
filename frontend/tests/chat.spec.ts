@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { measureForDrag, signIn, waitForBoard } from "./helpers";
+import { measureForDrag, registerAndSignIn, waitForBoard } from "./helpers";
 
 // Every test in this file stubs POST /api/chat in the browser, so the suite makes no
 // OpenRouter calls at all. That keeps it fast, deterministic, and free of rate limits.
@@ -19,6 +19,9 @@ const stubChat = async (
       {
         columns: [
           { id: "col-backlog", title: "Backlog", cardIds: ["card-1", "card-new"] },
+          { id: "col-discovery", title: "Discovery", cardIds: [] },
+          { id: "col-progress", title: "In Progress", cardIds: [] },
+          { id: "col-review", title: "Review", cardIds: [] },
           { id: "col-done", title: "Done", cardIds: [] },
         ],
         cards: {
@@ -43,24 +46,10 @@ const stubChat = async (
 };
 
 test.beforeEach(async ({ page }) => {
-  // LOAD-BEARING, shared-board invariant: this suite runs against ONE seeded board that
-  // every spec in the e2e run shares. A chat test that let its stubbed board reach the
-  // server would leave every later spec asserting against two columns instead of five.
-  // Any new spec that stubs /api/board must absorb PUTs exactly like this, or give its
-  // own board via DATABASE_PATH on a dedicated service. Reads and sign-in stay real.
-  await page.route("**/api/board", async (route) => {
-    if (route.request().method() !== "PUT") {
-      await route.fallback();
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: route.request().postData() ?? "{}",
-    });
-  });
-
-  await signIn(page);
+  // Each spec registers its own user, so it owns its own boards: nothing a test does
+  // to its board can leak into another spec, and no PUT absorption is needed. Reads
+  // and sign-in stay real.
+  await registerAndSignIn(page, "chat");
   await waitForBoard(page);
 });
 
@@ -95,7 +84,7 @@ test("a chat reply updates the board with no reload", async ({ page }) => {
     page.getByText("Card for Add a card called From The Assistant")
   ).toBeVisible();
   // A reload would lose the stub, so this proves the update was client state.
-  await expect(page.locator('[data-testid^="column-"]')).toHaveCount(2);
+  await expect(page.locator('[data-testid^="card-"]')).toHaveCount(2);
 });
 
 test("warnings from skipped operations are shown", async ({ page }) => {
@@ -122,7 +111,7 @@ test("New chat clears the conversation but keeps the board", async ({ page }) =>
   await expect(page.getByText("No conversation yet")).toBeVisible();
   await expect(page.getByText("Added a card for you.")).toHaveCount(0);
   // The board the assistant changed is still there.
-  await expect(page.locator('[data-testid^="column-"]')).toHaveCount(2);
+  await expect(page.locator('[data-testid^="card-"]')).toHaveCount(2);
 });
 
 test("the input is disabled while a reply is in flight", async ({ page }) => {
@@ -138,7 +127,13 @@ test("the input is disabled while a reply is in flight", async ({ page }) => {
       body: JSON.stringify({
         reply: "Finished.",
         board: {
-          columns: [{ id: "c", title: "C", cardIds: [] }],
+          columns: [
+            { id: "col-backlog", title: "Backlog", cardIds: [] },
+            { id: "col-discovery", title: "Discovery", cardIds: [] },
+            { id: "col-progress", title: "In Progress", cardIds: [] },
+            { id: "col-review", title: "Review", cardIds: [] },
+            { id: "col-done", title: "Done", cardIds: [] },
+          ],
           cards: {},
         },
         warnings: [],

@@ -69,10 +69,24 @@ def test_accepts_the_frontend_board_shape() -> None:
     assert board.cards["card-1"].title == "Align roadmap themes"
 
 
+def _without_optional_fields(board: dict) -> dict:
+    """Strip the optional card fields so a comparison ignores them when unset.
+
+    The wire format always emits dueDate/labels (as null/[]); the fixtures predate
+    them. Comparing the shape without the new fields keeps the drift guard focused on
+    the fields the frontend fixture actually has.
+    """
+    stripped = json.loads(json.dumps(board))
+    for card in stripped["cards"].values():
+        card.pop("dueDate", None)
+        card.pop("labels", None)
+    return stripped
+
+
 def test_serialises_back_to_the_same_json() -> None:
     board = BoardData.model_validate(FRONTEND_BOARD)
 
-    assert board.model_dump() == FRONTEND_BOARD
+    assert _without_optional_fields(board.model_dump()) == FRONTEND_BOARD
 
 
 def test_survives_a_json_round_trip() -> None:
@@ -80,7 +94,50 @@ def test_survives_a_json_round_trip() -> None:
 
     revived = BoardData.model_validate_json(board.model_dump_json())
 
-    assert revived.model_dump() == FRONTEND_BOARD
+    assert _without_optional_fields(revived.model_dump()) == FRONTEND_BOARD
+
+
+def test_a_card_can_carry_a_due_date_and_labels() -> None:
+    board = BoardData.model_validate(
+        {
+            "columns": [{"id": "c1", "title": "A", "cardIds": ["card-1"]}],
+            "cards": {
+                "card-1": {
+                    "id": "card-1",
+                    "title": "T",
+                    "details": "D",
+                    "dueDate": "2026-03-01",
+                    "labels": ["design", "urgent"],
+                }
+            },
+        }
+    )
+
+    card = board.cards["card-1"]
+    assert card.due_date is not None and card.due_date.isoformat() == "2026-03-01"
+    assert card.labels == ["design", "urgent"]
+
+    # Round-trips with the camelCase wire name.
+    raw = json.loads(board.model_dump_json())
+    assert raw["cards"]["card-1"]["dueDate"] == "2026-03-01"
+    assert "due_date" not in raw["cards"]["card-1"]
+
+
+def test_an_invalid_due_date_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        BoardData.model_validate(
+            {
+                "columns": [{"id": "c1", "title": "A", "cardIds": ["card-1"]}],
+                "cards": {
+                    "card-1": {
+                        "id": "card-1",
+                        "title": "T",
+                        "details": "D",
+                        "dueDate": "not-a-date",
+                    }
+                },
+            }
+        )
 
 
 def test_wire_format_keeps_the_frontend_spelling() -> None:

@@ -1,16 +1,24 @@
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # The JSON contract must match frontend/src/lib/kanban.ts field for field, so the wire
-# format stays camelCase (`cardIds`) while the Python attributes stay snake_case.
-# serialize_by_alias makes model_dump() emit the alias by default, so no call site has
-# to remember by_alias=True.
+# format stays camelCase (`cardIds`, `dueDate`) while the Python attributes stay
+# snake_case. serialize_by_alias makes model_dump() emit the alias by default, so no
+# call site has to remember by_alias=True.
 _CONFIG = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
 
 class Card(BaseModel):
+    model_config = _CONFIG
+
     id: str
     title: str
     details: str
+    # Optional planning fields. Absent means unset, so old boards and old clients
+    # keep working without a migration.
+    due_date: date | None = Field(default=None, alias="dueDate")
+    labels: list[str] = Field(default_factory=list)
 
 
 class Column(BaseModel):

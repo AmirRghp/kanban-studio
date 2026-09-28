@@ -13,6 +13,8 @@ const REVISION_HEADER = "X-Board-Revision";
 
 export type BoardWithRevision = { board: BoardData; revision: number };
 
+export type BoardSummary = { id: number; name: string; cardCount: number };
+
 const revisionFrom = (response: Response): number => {
   const raw = response.headers.get(REVISION_HEADER);
   const revision = raw === null ? NaN : Number.parseInt(raw, 10);
@@ -30,13 +32,15 @@ const throwConflict = (): never => {
   throw new RevisionConflictError();
 };
 
+const unexpected = (status: number): Error => new Error(`Unexpected status ${status}`);
+
 export const fetchSession = async (): Promise<SessionUser | null> => {
   const response = await fetch("/api/me");
   if (response.status === 401) {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`Unexpected status ${response.status}`);
+    throw unexpected(response.status);
   }
   return (await response.json()) as SessionUser;
 };
@@ -54,7 +58,29 @@ export const signIn = async (
     throw new Error("Invalid username or password");
   }
   if (!response.ok) {
-    throw new Error(`Unexpected status ${response.status}`);
+    throw unexpected(response.status);
+  }
+  return (await response.json()) as SessionUser;
+};
+
+export const register = async (
+  username: string,
+  password: string
+): Promise<SessionUser> => {
+  const response = await fetch("/api/register", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ username, password }),
+  });
+  if (response.status === 409) {
+    throw new Error("That username is already taken.");
+  }
+  if (response.status === 422) {
+    const body = (await response.json()) as { detail?: string };
+    throw new Error(body.detail ?? "Check the username and password rules.");
+  }
+  if (!response.ok) {
+    throw unexpected(response.status);
   }
   return (await response.json()) as SessionUser;
 };
@@ -62,7 +88,7 @@ export const signIn = async (
 export const signOut = async (): Promise<void> => {
   const response = await fetch("/api/logout", { method: "POST" });
   if (!response.ok) {
-    throw new Error(`Unexpected status ${response.status}`);
+    throw unexpected(response.status);
   }
 };
 
@@ -76,6 +102,7 @@ export type ChatTurn = {
 };
 
 export const sendChat = async (
+  boardId: number,
   message: string,
   history: { role: "user" | "assistant"; content: string }[],
   expectedRevision?: number
@@ -87,13 +114,13 @@ export const sendChat = async (
   const response = await fetch("/api/chat", {
     method: "POST",
     headers,
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, history, board_id: boardId }),
   });
   if (response.status === 409) {
     throwConflict();
   }
   if (!response.ok) {
-    throw new Error(`Unexpected status ${response.status}`);
+    throw unexpected(response.status);
   }
   const turn = (await response.json()) as ChatTurn;
   // Trust the header when present; older backends omit it.
@@ -103,10 +130,48 @@ export const sendChat = async (
   return turn;
 };
 
-export const fetchBoard = async (): Promise<BoardWithRevision> => {
-  const response = await fetch("/api/board");
+export const listBoards = async (): Promise<BoardSummary[]> => {
+  const response = await fetch("/api/boards");
   if (!response.ok) {
-    throw new Error(`Unexpected status ${response.status}`);
+    throw unexpected(response.status);
+  }
+  return (await response.json()) as BoardSummary[];
+};
+
+export const createBoard = async (name: string): Promise<BoardSummary> => {
+  const response = await fetch("/api/boards", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    throw unexpected(response.status);
+  }
+  return (await response.json()) as BoardSummary;
+};
+
+export const renameBoard = async (boardId: number, name: string): Promise<void> => {
+  const response = await fetch(`/api/boards/${boardId}`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    throw unexpected(response.status);
+  }
+};
+
+export const deleteBoard = async (boardId: number): Promise<void> => {
+  const response = await fetch(`/api/boards/${boardId}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw unexpected(response.status);
+  }
+};
+
+export const fetchBoard = async (boardId: number): Promise<BoardWithRevision> => {
+  const response = await fetch(`/api/boards/${boardId}/board`);
+  if (!response.ok) {
+    throw unexpected(response.status);
   }
   return {
     board: (await response.json()) as BoardData,
@@ -118,6 +183,7 @@ export const fetchBoard = async (): Promise<BoardWithRevision> => {
 // page hide relies on. The payload is a single small board, far below the browser's
 // 64 KB keepalive limit. If-Match makes a stale writer 409 rather than a silent clobber.
 export const saveBoard = async (
+  boardId: number,
   board: BoardData,
   expectedRevision?: number,
   keepalive = false
@@ -126,7 +192,7 @@ export const saveBoard = async (
   if (expectedRevision !== undefined) {
     headers["If-Match"] = String(expectedRevision);
   }
-  const response = await fetch("/api/board", {
+  const response = await fetch(`/api/boards/${boardId}/board`, {
     method: "PUT",
     headers,
     body: JSON.stringify(board),
@@ -136,6 +202,6 @@ export const saveBoard = async (
     throwConflict();
   }
   if (!response.ok) {
-    throw new Error(`Unexpected status ${response.status}`);
+    throw unexpected(response.status);
   }
 };

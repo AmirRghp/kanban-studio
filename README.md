@@ -1,4 +1,4 @@
-# Project Management MVP
+# Kanban Studio
 
 A Kanban board with an AI sidebar, served from a single Docker container.
 
@@ -26,7 +26,14 @@ as `model`.
 ./scripts/stop.sh     # stops the container
 ```
 
-Sign in at <http://localhost:8000> with username `user` and password `password`.
+Sign in at <http://localhost:8000> with the demo account `user` / `password`, or use the
+**Create account** tab to register your own. A new account gets one board called "First
+board" with the five standard columns and no cards; the demo account keeps its seeded
+board. Usernames are 3-30 characters, passwords at least 8, and passwords are stored as
+PBKDF2-SHA256 hashes, never in the clear.
+
+Each account can hold any number of boards. The switcher in the top bar creates, renames,
+switches between, and deletes them, and one user's boards are never visible to another.
 
 Logs: `docker compose logs -f app`
 
@@ -44,6 +51,10 @@ docker compose down -v
 Writes are guarded by a board revision: the frontend sends `If-Match` with the revision
 it read, and a write from another tab or chat turn answers `409` instead of silently
 clobbering. The browser shows a reload hint when that happens.
+
+A database from before the accounts work is migrated on startup: the demo `user` row gets
+its password hash backfilled, so `user` / `password` keeps working, and the boards table is
+rebuilt to drop its one-board-per-user constraint, keeping every board and revision.
 
 ## Tests
 
