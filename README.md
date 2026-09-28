@@ -2,6 +2,8 @@
 
 A Kanban board with an AI sidebar, served from a single Docker container.
 
+![The board with its five columns, the Assistant sidebar, and cards carrying due dates and labels](sc/sc.png)
+
 ## Requirements
 
 Docker with Compose, and a `.env` file in the project root:
